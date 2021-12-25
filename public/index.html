@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
+    <title>YANDEX</title>
+    <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@4.x/css/materialdesignicons.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.css" rel="stylesheet">
+    <style>
+        .file-list .v-card {
+            margin: 10px 0;
+            padding: 4px 0 4px 12px;
+            cursor: pointer;
+        }
+        .video-wrap{
+            text-align: center;
+        }
+        .mp4video{
+            width: 460px;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        <v-app>
+            <v-main>
+                <v-container>
+                    <v-text-field v-model="token" label="access_token"></v-text-field>
+                    <v-btn elevation="2" @click="load">Load</v-btn>
+                    <div class="file-list">
+                        <v-card elevation="2" v-for="(item,index) in items" :key="index" @click="openItem(item)">
+                            {{item.path}}
+                            <v-chip label>{{item.mime_type}}</v-chip>
+                        </v-card>
+                    </div>
+                </v-container>
+                <v-dialog v-model="dialog" width="800">
+                    <v-card v-if="dialog">
+                        <v-card-title class="text-h5">
+                            player
+                        </v-card-title>
+                        <div class="video-wrap">
+                            <video autoplay class="mp4video" v-if="mp4Url" :src="mp4Url" controls></video>
+                        </div>
+
+                        <v-divider></v-divider>
+
+                        <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn color="primary" text @click="dialog = false">
+                                Use Hls Player
+                            </v-btn>
+                        </v-card-actions>
+                    </v-card>
+                </v-dialog>
+            </v-main>
+        </v-app>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.js"></script>
+    <script>
+        new Vue({
+            el: '#app',
+            vuetify: new Vuetify(),
+            data() {
+                return {
+                    token: "",
+                    dialog: false,
+                    mp4Url: "",
+                    items: [],
+                }
+            },
+            methods: {
+                async load() {
+                    const data = await fetch('/yandex/?access_token=' + this.token)
+                    if (!data.ok) {
+                        return alert(data.statusText);
+                    }
+                    const j = await data.json();
+                    this.items = j.items
+                },
+                async openItem(item) {
+                    console.info(item)
+                    if (item.mime_type.indexOf('mp4') < 0) {
+                        return alert('please choose mp4 files');
+                    }
+                    this.dialog = true
+                    this.mp4Url = "/yandex" + item.path.replace('disk:', '')
+                }
+            }
+        })
+    </script>
+</body>
+
+</html>
