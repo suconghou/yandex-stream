@@ -33,6 +33,7 @@ type routeInfo struct {
 
 var route = []routeInfo{
 	{regexp.MustCompile(`^/yandex/(.*)$`), yandexServe},
+	{regexp.MustCompile(`^/list/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/part/(.+)$`), filePart},
 }
 

@@ -45,7 +45,6 @@ var (
 		"Content-Length",
 		"Content-Type",
 		"Content-Encoding",
-		"Date",
 		"Expires",
 		"Last-Modified",
 		"Etag",

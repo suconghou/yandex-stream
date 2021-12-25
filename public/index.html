@@ -10,15 +10,22 @@
     <link href="https://cdn.jsdelivr.net/npm/@mdi/font@4.x/css/materialdesignicons.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.css" rel="stylesheet">
     <style>
+        [v-cloak] {
+            display: none;
+        }
+
         .file-list .v-card {
             margin: 10px 0;
             padding: 4px 0 4px 12px;
             cursor: pointer;
         }
-        .video-wrap{
+
+        .video-wrap {
             text-align: center;
         }
-        .mp4video{
+
+        .mp4video,
+        .hlsvideo {
             width: 460px;
             margin: 0 auto;
         }
@@ -26,7 +33,7 @@
 </head>
 
 <body>
-    <div id="app">
+    <div id="app" v-cloak>
         <v-app>
             <v-main>
                 <v-container>
@@ -44,7 +51,10 @@
                         <v-card-title class="text-h5">
                             player
                         </v-card-title>
-                        <div class="video-wrap">
+                        <div class="video-wrap" v-if="hls">
+                            <video class="hlsvideo" id="video" controls></video>
+                        </div>
+                        <div class="video-wrap" v-else>
                             <video autoplay class="mp4video" v-if="mp4Url" :src="mp4Url" controls></video>
                         </div>
 
@@ -52,8 +62,11 @@
 
                         <v-card-actions>
                             <v-spacer></v-spacer>
-                            <v-btn color="primary" text @click="dialog = false">
+                            <v-btn v-if="!hls" color="primary" text @click="useHls">
                                 Use Hls Player
+                            </v-btn>
+                            <v-btn v-else color="primary" text @click="dialog=false">
+                                close
                             </v-btn>
                         </v-card-actions>
                     </v-card>
@@ -63,7 +76,10 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vuetify@2.x/dist/vuetify.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
     <script>
+        var hlsPlayer;
         new Vue({
             el: '#app',
             vuetify: new Vuetify(),
@@ -72,12 +88,14 @@
                     token: "",
                     dialog: false,
                     mp4Url: "",
+                    hls: false,
                     items: [],
+                    currItem: {},
                 }
             },
             methods: {
                 async load() {
-                    const data = await fetch('/yandex/?access_token=' + this.token)
+                    const data = await fetch('/list/yandex/?access_token=' + this.token)
                     if (!data.ok) {
                         return alert(data.statusText);
                     }
@@ -90,7 +108,42 @@
                         return alert('please choose mp4 files');
                     }
                     this.dialog = true
-                    this.mp4Url = "/yandex" + item.path.replace('disk:', '')
+                    this.hls = false;
+                    this.currItem = item;
+                    this.mp4Url = "/list/yandex" + item.path.replace('disk:', '')
+                },
+                useHls() {
+                    this.hls = true;
+                    const url = 'http://fast.suconghou.cn:8090/yandex/mp4/9drLLoyt_bc.mp4/index-v1-a1.m3u8' //this.mp4Url.replace('/list/', '/') + '/index-v1-a1.m3u8';
+                    this.hlsUrl = url;
+                    console.info(url)
+                    if (Hls.isSupported()) {
+                        setTimeout(() => {
+                            var video = document.getElementById('video');
+                            video.oncanplay = () => {
+                                video.play();
+                            }
+                            if (hlsPlayer) {
+                                hlsPlayer.stopLoad();
+                                hlsPlayer.destroy();
+                            }
+                            hlsPlayer = new Hls();
+                            // bind them together
+                            hlsPlayer.attachMedia(video);
+                            hlsPlayer.loadSource(this.hlsUrl);
+                            // MEDIA_ATTACHED event is fired by hls object once MediaSource is ready
+                            hlsPlayer.on(Hls.Events.MEDIA_ATTACHED, function () {
+                                console.log('video and hls.js are now bound together !');
+                                hlsPlayer.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
+                                    console.log(
+                                        'manifest loaded, found ' + data.levels.length + ' quality level'
+                                    );
+                                });
+                            });
+                        }, 20)
+                    } else {
+                        alert('not support')
+                    }
                 }
             }
         })

@@ -3,6 +3,7 @@ package yandex
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"yandex-stream/request"
 )
@@ -13,6 +14,8 @@ import (
 type YandexDrive struct {
 	base         string
 	access_token string
+	time         int64
+	cache        []byte
 }
 
 // New instance
@@ -29,7 +32,16 @@ func (d *YandexDrive) Auth(access_token string) {
 }
 
 func (d *YandexDrive) List() ([]byte, error) {
-	return d.requestJSON("/resources/files?limit=200")
+	var current = time.Now().Unix()
+	if current-d.time < 60 && len(d.cache) > 0 {
+		return d.cache, nil
+	}
+	data, err := d.requestJSON("/resources/files?limit=200")
+	if err == nil {
+		d.time = current
+		d.cache = data
+	}
+	return data, err
 }
 
 func (d *YandexDrive) requestJSON(path string) ([]byte, error) {
