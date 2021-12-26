@@ -114,7 +114,7 @@
                 },
                 useHls() {
                     this.hls = true;
-                    const url = 'http://fast.suconghou.cn:8090/yandex/mp4/9drLLoyt_bc.mp4/index-v1-a1.m3u8' //this.mp4Url.replace('/list/', '/') + '/index-v1-a1.m3u8';
+                    const url = this.mp4Url.replace('/list/', '/') + '/index-v1-a1.m3u8';
                     this.hlsUrl = url;
                     console.info(url)
                     if (Hls.isSupported()) {
