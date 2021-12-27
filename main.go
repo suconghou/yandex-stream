@@ -12,9 +12,11 @@ import (
 
 	"yandex-stream/request"
 	"yandex-stream/util"
+	"yandex-stream/ws"
 	"yandex-stream/yandex"
 
 	"github.com/tidwall/gjson"
+	"nhooyr.io/websocket"
 )
 
 type resp struct {
@@ -24,6 +26,7 @@ type resp struct {
 
 var (
 	disk = yandex.New(os.Getenv("YANDEX_ACCESS_TOKEN"))
+	wser = ws.New()
 )
 
 type routeInfo struct {
@@ -32,6 +35,7 @@ type routeInfo struct {
 }
 
 var route = []routeInfo{
+	{regexp.MustCompile(`^/ws/(.*)$`), wsHander},
 	{regexp.MustCompile(`^/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/list/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/part/(.+)$`), filePart},
@@ -44,6 +48,19 @@ func hooks(r *http.Request) {
 	if v := r.Header.Get("access_token"); v != "" {
 		disk.Auth(v)
 	}
+}
+
+func wsHander(w http.ResponseWriter, r *http.Request, match []string) error {
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		return err
+	}
+	defer c.Close(websocket.StatusInternalError, "")
+	var url = ""
+	if err = wser.Subscribe(r.Context(), c, url); ws.IsError(err) {
+		return err
+	}
+	return nil
 }
 
 // yandex drive list
