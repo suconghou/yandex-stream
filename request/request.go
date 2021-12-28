@@ -1,6 +1,7 @@
 package request
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -11,8 +12,25 @@ import (
 )
 
 var (
+	quickClient = &http.Client{
+		Timeout: time.Minute,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+
 	client = &http.Client{
-		Timeout: time.Minute * 2,
+		Timeout: time.Hour,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			Proxy:           http.ProxyFromEnvironment,
@@ -52,14 +70,14 @@ var (
 	}
 )
 
-// RequestJSON return json response
-func RequestJSON(target string, method string, body io.ReadCloser, headers http.Header) ([]byte, error) {
-	res, err := Request(target, method, body, headers)
+// RequestJSON send get request expect json response less than 1MB
+func RequestJSON(target string, headers http.Header) ([]byte, error) {
+	res, err := doRequest(target, http.MethodGet, nil, headers)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
-	bs, err := io.ReadAll(res.Body)
+	bs, err := io.ReadAll(io.LimitReader(res.Body, 1048576))
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +87,8 @@ func RequestJSON(target string, method string, body io.ReadCloser, headers http.
 	return bs, nil
 }
 
-// Request return json response
-func Request(target string, method string, body io.ReadCloser, headers http.Header) (*http.Response, error) {
+// doRequest max timeout is a minute
+func doRequest(target string, method string, body io.ReadCloser, headers http.Header) (*http.Response, error) {
 	req, err := http.NewRequest(method, target, body)
 	if err != nil {
 		return nil, err
@@ -83,6 +101,16 @@ func Request(target string, method string, body io.ReadCloser, headers http.Head
 		}
 		req.ContentLength = int64(length)
 	}
+	return quickClient.Do(req)
+}
+
+// max timeout is an hour
+func GetWithContext(target string, headers http.Header, ctx context.Context) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = headers
 	return client.Do(req)
 }
 
@@ -92,7 +120,7 @@ func Proxy(w http.ResponseWriter, r *http.Request, url string) error {
 		client    = &http.Client{Timeout: time.Hour}
 		reqHeader = http.Header{}
 	)
-	req, err := http.NewRequest(r.Method, url, r.Body)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err

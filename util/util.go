@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 )
 
 var (
+	ops uint64
 	// Log write to stdout
 	Log = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lshortfile)
 )
@@ -33,4 +35,9 @@ func JSONPut(w http.ResponseWriter, v interface{}, status int, age int) (int, er
 	h.Set("Cache-Control", fmt.Sprintf("public,max-age=%d", age))
 	w.WriteHeader(status)
 	return w.Write(bs)
+}
+
+// Uqid retrun counter
+func Uqid() uint64 {
+	return atomic.AddUint64(&ops, 1)
 }

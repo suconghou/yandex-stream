@@ -24,30 +24,100 @@ type ActionType int
 const (
 	ActionBreak ActionType = iota + 1
 	ActionDo
+	ActionErr
 )
 
 type wsCenter struct {
+	lock  *sync.Mutex
+	conns map[uint64]*wsTask
+}
+
+type wsTask struct {
+	ctx   context.Context
+	c     *websocket.Conn
+	url   string
+	total int64 // cached total file size, will be set later
+}
+
+type rangeTask struct {
+	start int64
+	end   int64
+	err   error
 }
 
 func New() *wsCenter {
-	return &wsCenter{}
+	return &wsCenter{
+		lock:  &sync.Mutex{},
+		conns: map[uint64]*wsTask{},
+	}
 }
 
+// keep runing , if return ws closed
 func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string) error {
 	var (
-		signal = make(chan ActionType, 1)
-		lock   = sync.Mutex{}
-		tasks  = [...]int64{0, 0}
+		id   = util.Uqid()
+		task = &wsTask{ctx, c, url, 0}
 	)
-	fn_read := func() error {
+	w.lock.Lock()
+	w.conns[id] = task
+	w.lock.Unlock()
+
+	var (
+		rtask            = task.read()
+		fetchCtx, cancel = context.WithCancel(ctx)
+	)
+
+	defer func() {
+		w.lock.Lock()
+		delete(w.conns, id)
+		w.lock.Unlock()
+		cancel()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		case item, ok := <-rtask:
+			cancel()
+			if !ok {
+				// channel closed, ws maybe closed
+				return nil
+			}
+			if item.err != nil {
+				// error occurred, it's ws connection error, we stoped
+				return item.err
+			}
+			if item.start != -1 && item.end != -1 {
+				// we have work to do
+				fetchCtx, cancel = context.WithCancel(ctx)
+				go func() {
+					if err := task.write(item.start, item.end, fetchCtx); IsError(err) {
+						util.Log.Print(err)
+					}
+				}()
+			}
+		}
+	}
+}
+
+// the error maybe ctx.Err or c.Read , those errors all caused by ws connection
+// so if error , we stop all the task
+func (t *wsTask) read() chan *rangeTask {
+	var queue = make(chan *rangeTask)
+	go func() {
+		defer close(queue)
 		for {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-t.ctx.Done():
+				queue <- &rangeTask{-1, -1, t.ctx.Err()}
+				return
 			default:
-				msgType, data, err := c.Read(ctx)
+				msgType, data, err := t.c.Read(t.ctx)
 				if err != nil {
-					return err
+					queue <- &rangeTask{-1, -1, err}
+					return
 				}
 				var (
 					j      = gjson.ParseBytes(data)
@@ -55,84 +125,71 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 				)
 				switch action {
 				case "req":
-					signal <- ActionBreak
 					var (
 						start = j.Get("start").Int()
 						end   = j.Get("end").Int()
 					)
-					lock.Lock()
-					tasks[0] = start
-					tasks[1] = end
-					lock.Unlock()
-					signal <- ActionDo
+					queue <- &rangeTask{start, end, nil}
+				case "quit":
+					queue <- &rangeTask{-1, -1, nil}
 				default:
 					util.Log.Print(msgType, action, data)
 				}
 			}
 		}
-	}
-	go func() {
-		if err := fn_read(); IsError(err) {
-			util.Log.Print(err)
-		}
 	}()
+	return queue
+}
+
+// do one range task
+func (t *wsTask) write(start int64, end int64, ctx context.Context) error {
+	r, status, total, err := getResponse(t.url, start, end, ctx)
+	if err != nil {
+		if !IsError(err) {
+			return nil
+		}
+		var v = map[string]interface{}{
+			"type":   "error",
+			"status": status,
+			"msg":    err.Error(),
+		}
+		if bs, err := json.Marshal(v); err == nil {
+			return writeTimeout(ctx, websocket.MessageText, t.c, bs)
+		} else {
+			return err
+		}
+	}
+	defer r.Close()
+	if t.total < 1 {
+		t.total = total
+	} else {
+		if t.total != total {
+			return errors.New("total size changed,the url resource may changed")
+		}
+	}
+	var buffer = make([]byte, 1048576)
+	var offset = start
 	for {
 		select {
-		case msg := <-signal:
-			if msg == ActionBreak {
-				continue
-			}
-			var (
-				start = tasks[0]
-				end   = tasks[1]
-			)
-			if r, status, total, err := getResponse(url, start, end); err == nil {
-				var buffer = make([]byte, 1048576)
-				var stream_copy = func() error {
-					defer r.Close()
-					var offset = start
-					for {
-						select {
-						case f := <-signal:
-							fmt.Println(f)
-						default:
-							n, err := r.Read(buffer)
-
-							// TODO binary send
-							var data = buildMsg(total, offset, offset+int64(n), buffer[:n])
-							offset += int64(n)
-							writeTimeout(ctx, websocket.MessageBinary, c, data)
-							if err != nil {
-								return err
-							}
-						}
-					}
-				}
-				if err = stream_copy(); err != nil {
-					util.Log.Print(err)
-				}
-			} else {
-				var v = map[string]interface{}{
-					"status": status,
-					"msg":    err.Error(),
-				}
-				if bs, err := json.Marshal(v); err == nil {
-					err = writeTimeout(ctx, websocket.MessageText, c, bs)
-					if err != nil {
-						return err
-					}
-				} else {
-					util.Log.Print(err)
-				}
-			}
 		case <-ctx.Done():
 			return ctx.Err()
+		default:
+			n, err := r.Read(buffer)
+			if err != nil {
+				return err
+			}
+			var data = buildMsg(total, offset, offset+int64(n), buffer[:n])
+			offset += int64(n)
+			err = writeTimeout(ctx, websocket.MessageBinary, t.c, data)
+			if err != nil {
+				return err
+			}
 		}
 	}
 }
 
 func IsError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	var er = websocket.CloseStatus(err)
@@ -148,8 +205,10 @@ func writeTimeout(ctx context.Context, msgType websocket.MessageType, c *websock
 	return c.Write(ctx, msgType, msg)
 }
 
-// TODO context
-func getResponse(url string, start int64, end int64) (io.ReadCloser, int, int64, error) {
+func getResponse(url string, start int64, end int64, ctx context.Context) (io.ReadCloser, int, int64, error) {
+	if end > 0 && end < start {
+		return nil, 0, 0, fmt.Errorf("invalid range")
+	}
 	var headers = http.Header{
 		"range": []string{fmt.Sprintf("bytes=%d-", start)},
 	}
@@ -164,7 +223,7 @@ func getResponse(url string, start int64, end int64) (io.ReadCloser, int, int64,
 		times  = 0
 	)
 	for {
-		r, status, total, err = getRetry(url, headers)
+		r, status, total, err = getRetry(url, headers, ctx)
 		if err == nil {
 			break
 		}
@@ -177,8 +236,8 @@ func getResponse(url string, start int64, end int64) (io.ReadCloser, int, int64,
 }
 
 // the url resource must accept range
-func getRetry(url string, headers http.Header) (io.ReadCloser, int, int64, error) {
-	resp, err := request.Request(url, http.MethodGet, nil, headers)
+func getRetry(url string, headers http.Header, ctx context.Context) (io.ReadCloser, int, int64, error) {
+	resp, err := request.GetWithContext(url, headers, ctx)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -186,9 +245,9 @@ func getRetry(url string, headers http.Header) (io.ReadCloser, int, int64, error
 		return nil, resp.StatusCode, 0, fmt.Errorf("%s : %s", url, resp.Status)
 	}
 	var (
-		filesize    = resp.ContentLength
-		cr          = resp.Header.Get("Content-Range")
-		rangeResReg = regexp.MustCompile(`\d+/(\d+)`)
+		filesize    int64 = -1
+		cr                = resp.Header.Get("Content-Range")
+		rangeResReg       = regexp.MustCompile(`\d+/(\d+)`)
 	)
 	if rangeResReg.MatchString(cr) {
 		matches := rangeResReg.FindStringSubmatch(cr)
@@ -200,7 +259,14 @@ func getRetry(url string, headers http.Header) (io.ReadCloser, int, int64, error
 	return resp.Body, resp.StatusCode, filesize, nil
 }
 
-// TODO
+// binary msg to send
 func buildMsg(total int64, start int64, end int64, data []byte) []byte {
-	return nil
+	return append(chunkHeader(start, end, total), data...)
+}
+
+// ws binary chunk header,frontend to parse,header is 30 bytes
+// [start,end,total]
+func chunkHeader(start int64, end int64, total int64) []byte {
+	var header = fmt.Sprintf(`[%d,%d,%d]`, start, end, total)
+	return []byte(fmt.Sprintf("%-30s", header))
 }

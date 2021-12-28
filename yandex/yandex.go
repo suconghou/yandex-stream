@@ -46,11 +46,10 @@ func (d *YandexDrive) List() ([]byte, error) {
 
 func (d *YandexDrive) requestJSON(path string) ([]byte, error) {
 	var (
-		method  = http.MethodGet
 		headers = http.Header{
 			"Accept":        {"application/json"},
 			"Authorization": {fmt.Sprintf("OAuth %s", d.access_token)},
 		}
 	)
-	return request.RequestJSON(d.base+path, method, nil, headers)
+	return request.RequestJSON(d.base+path, headers)
 }
