@@ -52,6 +52,16 @@ func New() *wsCenter {
 	}
 }
 
+func (w *wsCenter) Status() []uint64 {
+	var ids = []uint64{}
+	w.lock.Lock()
+	for id := range w.conns {
+		ids = append(ids, id)
+	}
+	w.lock.Unlock()
+	return ids
+}
+
 // keep runing , if return ws closed
 func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string) error {
 	var (
@@ -94,7 +104,9 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 				fetchCtx, cancel = context.WithCancel(ctx)
 				go func() {
 					if err := task.write(item.start, item.end, fetchCtx); IsError(err) {
-						util.Log.Print(err)
+						if err != io.EOF {
+							util.Log.Print(err)
+						}
 					}
 				}()
 			}
@@ -209,12 +221,14 @@ func getResponse(url string, start int64, end int64, ctx context.Context) (io.Re
 	if end > 0 && end < start {
 		return nil, 0, 0, fmt.Errorf("invalid range")
 	}
-	var headers = http.Header{
-		"range": []string{fmt.Sprintf("bytes=%d-", start)},
-	}
+	var (
+		ran     = fmt.Sprintf("bytes=%d-", start)
+		headers = http.Header{}
+	)
 	if end > 0 && end >= start {
-		headers.Set("range", fmt.Sprintf("bytes=%d-%d", start, end))
+		ran = fmt.Sprintf("bytes=%d-%d", start, end)
 	}
+	headers.Set("Range", ran)
 	var (
 		r      io.ReadCloser
 		total  int64
@@ -241,7 +255,7 @@ func getRetry(url string, headers http.Header, ctx context.Context) (io.ReadClos
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	if resp.StatusCode != http.StatusOK {
+	if !(resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
 		return nil, resp.StatusCode, 0, fmt.Errorf("%s : %s", url, resp.Status)
 	}
 	var (

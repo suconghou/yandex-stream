@@ -35,6 +35,7 @@ type routeInfo struct {
 }
 
 var route = []routeInfo{
+	{regexp.MustCompile(`^/ws/status$`), wsStatus},
 	{regexp.MustCompile(`^/ws/(.*)$`), wsHander},
 	{regexp.MustCompile(`^/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/list/yandex/(.*)$`), yandexServe},
@@ -49,14 +50,19 @@ func hooks(r *http.Request) {
 		disk.Auth(v)
 	}
 }
+func wsStatus(w http.ResponseWriter, r *http.Request, match []string) error {
+	var data = wser.Status()
+	_, err := util.JSONPut(w, data, http.StatusOK, 5)
+	return err
+}
 
 func wsHander(w http.ResponseWriter, r *http.Request, match []string) error {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return err
 	}
-	defer c.Close(websocket.StatusInternalError, "")
-	var url = ""
+	defer c.Close(websocket.StatusNormalClosure, "")
+	var url = "http://share.suconghou.cn/stream/mp4/9drLLoyt_bc.mp4"
 	if err = wser.Subscribe(r.Context(), c, url); ws.IsError(err) {
 		return err
 	}

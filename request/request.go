@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"yandex-stream/util"
 )
 
 var (
@@ -106,6 +107,7 @@ func doRequest(target string, method string, body io.ReadCloser, headers http.He
 
 // max timeout is an hour
 func GetWithContext(target string, headers http.Header, ctx context.Context) (*http.Response, error) {
+	util.Log.Print(target, headers)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
