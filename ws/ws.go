@@ -28,7 +28,7 @@ const (
 )
 
 type wsCenter struct {
-	lock  *sync.Mutex
+	lock  *sync.RWMutex
 	conns map[uint64]*wsTask
 }
 
@@ -40,25 +40,29 @@ type wsTask struct {
 }
 
 type rangeTask struct {
-	start int64
-	end   int64
-	err   error
+	part int64
+	err  error
 }
+
+const (
+	partLen  = 1048576 // 1MB
+	chunkLen = 65536   // 64KB
+)
 
 func New() *wsCenter {
 	return &wsCenter{
-		lock:  &sync.Mutex{},
+		lock:  &sync.RWMutex{},
 		conns: map[uint64]*wsTask{},
 	}
 }
 
 func (w *wsCenter) Status() []uint64 {
 	var ids = []uint64{}
-	w.lock.Lock()
+	w.lock.RLock()
 	for id := range w.conns {
 		ids = append(ids, id)
 	}
-	w.lock.Unlock()
+	w.lock.RUnlock()
 	return ids
 }
 
@@ -99,11 +103,11 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 				// error occurred, it's ws connection error, we stoped
 				return item.err
 			}
-			if item.start != -1 && item.end != -1 {
+			if item.part != -1 {
 				// we have work to do
 				fetchCtx, cancel = context.WithCancel(ctx)
 				go func() {
-					if err := task.write(item.start, item.end, fetchCtx); IsError(err) {
+					if err := task.write(item.part, fetchCtx); IsError(err) {
 						if err != io.EOF {
 							util.Log.Print(err)
 						}
@@ -123,12 +127,12 @@ func (t *wsTask) read() chan *rangeTask {
 		for {
 			select {
 			case <-t.ctx.Done():
-				queue <- &rangeTask{-1, -1, t.ctx.Err()}
+				queue <- &rangeTask{-1, t.ctx.Err()}
 				return
 			default:
-				msgType, data, err := t.c.Read(t.ctx)
+				_, data, err := t.c.Read(t.ctx)
 				if err != nil {
-					queue <- &rangeTask{-1, -1, err}
+					queue <- &rangeTask{-1, err}
 					return
 				}
 				var (
@@ -137,15 +141,9 @@ func (t *wsTask) read() chan *rangeTask {
 				)
 				switch action {
 				case "req":
-					var (
-						start = j.Get("start").Int()
-						end   = j.Get("end").Int()
-					)
-					queue <- &rangeTask{start, end, nil}
+					queue <- &rangeTask{j.Get("part").Int(), nil}
 				case "quit":
-					queue <- &rangeTask{-1, -1, nil}
-				default:
-					util.Log.Print(msgType, action, data)
+					queue <- &rangeTask{-1, nil}
 				}
 			}
 		}
@@ -154,49 +152,54 @@ func (t *wsTask) read() chan *rangeTask {
 }
 
 // do one range task
-func (t *wsTask) write(start int64, end int64, ctx context.Context) error {
+func (t *wsTask) write(part int64, ctx context.Context) error {
+	start, end, err := calc(part, t.total)
+	if err != nil {
+		return t.writeErrorMsg(-1, err, ctx)
+	}
 	r, status, total, err := getResponse(t.url, start, end, ctx)
 	if err != nil {
 		if !IsError(err) {
 			return nil
 		}
-		var v = map[string]interface{}{
-			"type":   "error",
-			"status": status,
-			"msg":    err.Error(),
-		}
-		if bs, err := json.Marshal(v); err == nil {
-			return writeTimeout(ctx, websocket.MessageText, t.c, bs)
-		} else {
-			return err
-		}
+		return t.writeErrorMsg(status, err, ctx)
 	}
 	defer r.Close()
 	if t.total < 1 {
 		t.total = total
 	} else {
 		if t.total != total {
-			return errors.New("total size changed,the url resource may changed")
+			err = errors.New("total size changed,the url resource may changed")
+			return t.writeErrorMsg(-2, err, ctx)
 		}
 	}
-	var buffer = make([]byte, 1048576)
-	var offset = start
-	for {
+	buffer, err := io.ReadAll(io.LimitReader(r, partLen))
+	if err != nil {
+		return t.writeErrorMsg(-4, err, ctx)
+	}
+	for i, buf := range splitBuffer(buffer) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			n, err := r.Read(buffer)
-			if err != nil {
-				return err
-			}
-			var data = buildMsg(total, offset, offset+int64(n), buffer[:n])
-			offset += int64(n)
-			err = writeTimeout(ctx, websocket.MessageBinary, t.c, data)
-			if err != nil {
+			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(part, i, total, buf)); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (t *wsTask) writeErrorMsg(status int, err error, ctx context.Context) error {
+	var v = map[string]interface{}{
+		"type":   "error",
+		"status": status,
+		"msg":    err.Error(),
+	}
+	if bs, err := json.Marshal(v); err == nil {
+		return writeTimeout(ctx, websocket.MessageText, t.c, bs)
+	} else {
+		return err
 	}
 }
 
@@ -221,14 +224,8 @@ func getResponse(url string, start int64, end int64, ctx context.Context) (io.Re
 	if end > 0 && end < start {
 		return nil, 0, 0, fmt.Errorf("invalid range")
 	}
-	var (
-		ran     = fmt.Sprintf("bytes=%d-", start)
-		headers = http.Header{}
-	)
-	if end > 0 && end >= start {
-		ran = fmt.Sprintf("bytes=%d-%d", start, end)
-	}
-	headers.Set("Range", ran)
+	var headers = http.Header{}
+	headers.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	var (
 		r      io.ReadCloser
 		total  int64
@@ -273,14 +270,54 @@ func getRetry(url string, headers http.Header, ctx context.Context) (io.ReadClos
 	return resp.Body, resp.StatusCode, filesize, nil
 }
 
+func calc(part int64, total int64) (int64, int64, error) {
+	var (
+		start = part * partLen
+		end   = (part+1)*partLen - 1
+	)
+	if total < 1 {
+		return start, end, nil
+	}
+	if start >= total {
+		return start, end, fmt.Errorf("invalid range")
+	}
+	if end >= total {
+		end = total - 1
+	}
+	return start, end, nil
+}
+
 // binary msg to send
-func buildMsg(total int64, start int64, end int64, data []byte) []byte {
-	return append(chunkHeader(start, end, total), data...)
+func buildMsg(part int64, index int, total int64, data []byte) []byte {
+	return append(chunkHeader(part, index, total), data...)
 }
 
 // ws binary chunk header,frontend to parse,header is 30 bytes
-// [start,end,total]
-func chunkHeader(start int64, end int64, total int64) []byte {
-	var header = fmt.Sprintf(`[%d,%d,%d]`, start, end, total)
+// [part,index,total]
+func chunkHeader(part int64, index int, total int64) []byte {
+	var header = fmt.Sprintf(`[%d,%d,%d]`, part, index, total)
 	return []byte(fmt.Sprintf("%-30s", header))
+}
+
+func splitBuffer(bs []byte) [][]byte {
+	var (
+		buffers = [][]byte{}
+		start   = 0
+		end     = 0
+		l       = len(bs)
+		data    []byte
+	)
+	for {
+		if start >= l {
+			break
+		}
+		end = start + chunkLen
+		if end > l {
+			end = l
+		}
+		data = bs[start:end]
+		buffers = append(buffers, data)
+		start = end
+	}
+	return buffers
 }

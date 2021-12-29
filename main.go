@@ -62,7 +62,7 @@ func wsHander(w http.ResponseWriter, r *http.Request, match []string) error {
 		return err
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
-	var url = "http://share.suconghou.cn/stream/mp4/9drLLoyt_bc.mp4"
+	var url = "http://127.0.0.1:8866/9drLLoyt_bc.mp4"
 	if err = wser.Subscribe(r.Context(), c, url); ws.IsError(err) {
 		return err
 	}
