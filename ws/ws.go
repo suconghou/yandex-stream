@@ -101,6 +101,9 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 			}
 			if item.err != nil {
 				// error occurred, it's ws connection error, we stoped
+				if item.err == io.EOF {
+					return nil
+				}
 				return item.err
 			}
 			if item.part != -1 {
