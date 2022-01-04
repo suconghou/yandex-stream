@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"yandex-stream/request"
+	"yandex-stream/singal"
 	"yandex-stream/util"
 	"yandex-stream/ws"
 	"yandex-stream/yandex"
@@ -35,8 +36,10 @@ type routeInfo struct {
 }
 
 var route = []routeInfo{
+	{regexp.MustCompile(`^/uid/status$`), singal.Status},
+	{regexp.MustCompile(`^/uid/([\w\-]{36})$`), singal.Handler},
 	{regexp.MustCompile(`^/ws/status$`), wsStatus},
-	{regexp.MustCompile(`^/ws/(.*)$`), wsHander},
+	{regexp.MustCompile(`^/ws/(.*)$`), wsHandler},
 	{regexp.MustCompile(`^/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/list/yandex/(.*)$`), yandexServe},
 	{regexp.MustCompile(`^/part/(.+)$`), filePart},
@@ -50,13 +53,14 @@ func hooks(r *http.Request) {
 		disk.Auth(v)
 	}
 }
+
 func wsStatus(w http.ResponseWriter, r *http.Request, match []string) error {
 	var data = wser.Status()
 	_, err := util.JSONPut(w, data, http.StatusOK, 5)
 	return err
 }
 
-func wsHander(w http.ResponseWriter, r *http.Request, match []string) error {
+func wsHandler(w http.ResponseWriter, r *http.Request, match []string) error {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return err

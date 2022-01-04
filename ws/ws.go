@@ -56,11 +56,11 @@ func New() *wsCenter {
 	}
 }
 
-func (w *wsCenter) Status() []uint64 {
-	var ids = []uint64{}
+func (w *wsCenter) Status() map[uint64]string {
+	var ids = map[uint64]string{}
 	w.lock.RLock()
-	for id := range w.conns {
-		ids = append(ids, id)
+	for id, u := range w.conns {
+		ids[id] = u.url
 	}
 	w.lock.RUnlock()
 	return ids
