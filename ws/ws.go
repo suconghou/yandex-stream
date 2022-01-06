@@ -77,24 +77,20 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 	w.lock.Unlock()
 
 	var (
-		rtask            = task.read()
-		fetchCtx, cancel = context.WithCancel(ctx)
+		rtask = task.read()
 	)
 
 	defer func() {
 		w.lock.Lock()
 		delete(w.conns, id)
 		w.lock.Unlock()
-		cancel()
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			cancel()
 			return ctx.Err()
 		case item, ok := <-rtask:
-			cancel()
 			if !ok {
 				// channel closed, ws maybe closed
 				return nil
@@ -108,9 +104,8 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 			}
 			if item.part != -1 {
 				// we have work to do
-				fetchCtx, cancel = context.WithCancel(ctx)
 				go func() {
-					if err := task.write(item.part, fetchCtx); IsError(err) {
+					if err := task.write(item.part, ctx); IsError(err) {
 						if err != io.EOF {
 							util.Log.Print(err)
 						}
@@ -186,6 +181,9 @@ func (t *wsTask) write(part int64, ctx context.Context) error {
 			return ctx.Err()
 		default:
 			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(part, i, total, buf)); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					continue
+				}
 				return err
 			}
 		}
