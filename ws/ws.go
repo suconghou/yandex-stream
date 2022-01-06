@@ -40,13 +40,13 @@ type wsTask struct {
 }
 
 type rangeTask struct {
-	part int64
-	err  error
+	parts []int64
+	err   error
 }
 
 const (
-	partLen  = 1048576 // 1MB
-	chunkLen = 65536   // 64KB
+	partLen  = 65536
+	chunkLen = 65536 // 64KB
 )
 
 func New() *wsCenter {
@@ -102,10 +102,10 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 				}
 				return item.err
 			}
-			if item.part != -1 {
+			if len(item.parts) > 0 {
 				// we have work to do
 				go func() {
-					if err := task.write(item.part, ctx); IsError(err) {
+					if err := task.write(item.parts, ctx); IsError(err) {
 						if err != io.EOF {
 							util.Log.Print(err)
 						}
@@ -125,12 +125,12 @@ func (t *wsTask) read() chan *rangeTask {
 		for {
 			select {
 			case <-t.ctx.Done():
-				queue <- &rangeTask{-1, t.ctx.Err()}
+				queue <- &rangeTask{[]int64{}, t.ctx.Err()}
 				return
 			default:
 				_, data, err := t.c.Read(t.ctx)
 				if err != nil {
-					queue <- &rangeTask{-1, err}
+					queue <- &rangeTask{[]int64{}, err}
 					return
 				}
 				var (
@@ -139,9 +139,15 @@ func (t *wsTask) read() chan *rangeTask {
 				)
 				switch action {
 				case "req":
-					queue <- &rangeTask{j.Get("part").Int(), nil}
+					var parts = []int64{}
+					j.Get("parts").ForEach(func(key, value gjson.Result) bool {
+						parts = append(parts, value.Int())
+						value.Uint()
+						return true
+					})
+					queue <- &rangeTask{parts, nil}
 				case "quit":
-					queue <- &rangeTask{-1, nil}
+					queue <- &rangeTask{[]int64{}, nil}
 				}
 			}
 		}
@@ -150,8 +156,8 @@ func (t *wsTask) read() chan *rangeTask {
 }
 
 // do one range task
-func (t *wsTask) write(part int64, ctx context.Context) error {
-	start, end, err := calc(part, t.total)
+func (t *wsTask) write(parts []int64, ctx context.Context) error {
+	start, end, err := calc(parts, t.total)
 	if err != nil {
 		return t.writeErrorMsg(-1, err, ctx)
 	}
@@ -175,12 +181,12 @@ func (t *wsTask) write(part int64, ctx context.Context) error {
 	if err != nil {
 		return t.writeErrorMsg(-4, err, ctx)
 	}
-	for i, buf := range splitBuffer(buffer) {
+	for _, buf := range splitBuffer(buffer) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(part, i, total, buf)); err != nil {
+			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(parts[0], total, buf)); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					continue
 				}
@@ -271,10 +277,10 @@ func getRetry(url string, headers http.Header, ctx context.Context) (io.ReadClos
 	return resp.Body, resp.StatusCode, filesize, nil
 }
 
-func calc(part int64, total int64) (int64, int64, error) {
+func calc(parts []int64, total int64) (int64, int64, error) {
 	var (
-		start = part * partLen
-		end   = (part+1)*partLen - 1
+		start = parts[0] * partLen
+		end   = (parts[0]+1)*partLen - 1
 	)
 	if total < 1 {
 		return start, end, nil
@@ -289,14 +295,14 @@ func calc(part int64, total int64) (int64, int64, error) {
 }
 
 // binary msg to send
-func buildMsg(part int64, index int, total int64, data []byte) []byte {
-	return append(chunkHeader(part, index, total), data...)
+func buildMsg(part int64, total int64, data []byte) []byte {
+	return append(chunkHeader(part, total), data...)
 }
 
 // ws binary chunk header,frontend to parse,header is 30 bytes
-// [part,index,total]
-func chunkHeader(part int64, index int, total int64) []byte {
-	var header = fmt.Sprintf(`[%d,%d,%d]`, part, index, total)
+// [part,total]
+func chunkHeader(part int64, total int64) []byte {
+	var header = fmt.Sprintf(`[%d,%d]`, part, total)
 	return []byte(fmt.Sprintf("%-30s", header))
 }
 
