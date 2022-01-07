@@ -41,3 +41,51 @@ func JSONPut(w http.ResponseWriter, v interface{}, status int, age int) (int, er
 func Uqid() uint64 {
 	return atomic.AddUint64(&ops, 1)
 }
+
+func InArray(x int64, arr []int64) bool {
+	for _, n := range arr {
+		if x == n {
+			return true
+		}
+	}
+	return false
+}
+
+func removeDuplication(arr []int64) []int64 {
+	set := make(map[int64]struct{}, len(arr))
+	j := 0
+	for _, v := range arr {
+		_, ok := set[v]
+		if ok {
+			continue
+		}
+		set[v] = struct{}{}
+		arr[j] = v
+		j++
+	}
+
+	return arr[:j]
+}
+
+func SplitGroup(arr []int64) [][]int64 {
+	arr = removeDuplication(arr)
+	var (
+		start = arr[0]
+		n     = 0
+		group = []int64{}
+		ret   = [][]int64{}
+	)
+	for _, x := range arr {
+		if x == start+int64(n) {
+			group = append(group, x)
+			n++
+		} else {
+			ret = append(ret, group)
+			group = []int64{x}
+			start = x
+			n = 1
+		}
+	}
+	ret = append(ret, group)
+	return ret
+}

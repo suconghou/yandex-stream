@@ -85,7 +85,7 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 		delete(w.conns, id)
 		w.lock.Unlock()
 	}()
-
+	var parts = []int64{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -102,16 +102,27 @@ func (w *wsCenter) Subscribe(ctx context.Context, c *websocket.Conn, url string)
 				}
 				return item.err
 			}
-			if len(item.parts) > 0 {
-				// we have work to do
-				go func() {
-					if err := task.write(item.parts, ctx); IsError(err) {
-						if err != io.EOF {
-							util.Log.Print(err)
-						}
-					}
-				}()
+			for _, n := range item.parts {
+				if !util.InArray(n, parts) {
+					parts = append(parts, n)
+				}
 			}
+		default:
+			var l = len(parts)
+			if l < 1 {
+				time.Sleep(time.Second)
+				continue
+			}
+			var groups = util.SplitGroup(parts)
+			util.Log.Print(groups)
+			for _, group := range groups {
+				if err := task.write(group, ctx); IsError(err) {
+					if err != io.EOF {
+						util.Log.Print(err)
+					}
+				}
+			}
+			parts = []int64{}
 		}
 	}
 }
@@ -157,6 +168,7 @@ func (t *wsTask) read() chan *rangeTask {
 
 // do one range task
 func (t *wsTask) write(parts []int64, ctx context.Context) error {
+	var index = parts[0]
 	start, end, err := calc(parts, t.total)
 	if err != nil {
 		return t.writeErrorMsg(-1, err, ctx)
@@ -177,16 +189,16 @@ func (t *wsTask) write(parts []int64, ctx context.Context) error {
 			return t.writeErrorMsg(-2, err, ctx)
 		}
 	}
-	buffer, err := io.ReadAll(io.LimitReader(r, partLen))
+	buffer, err := io.ReadAll(io.LimitReader(r, partLen*int64(len(parts))))
 	if err != nil {
 		return t.writeErrorMsg(-4, err, ctx)
 	}
-	for _, buf := range splitBuffer(buffer) {
+	for i, buf := range splitBuffer(buffer) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(parts[0], total, buf)); err != nil {
+			if err = writeTimeout(ctx, websocket.MessageBinary, t.c, buildMsg(index+int64(i), total, buf)); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					continue
 				}
@@ -280,7 +292,7 @@ func getRetry(url string, headers http.Header, ctx context.Context) (io.ReadClos
 func calc(parts []int64, total int64) (int64, int64, error) {
 	var (
 		start = parts[0] * partLen
-		end   = (parts[0]+1)*partLen - 1
+		end   = (parts[0]+int64(len(parts)))*partLen - 1
 	)
 	if total < 1 {
 		return start, end, nil
